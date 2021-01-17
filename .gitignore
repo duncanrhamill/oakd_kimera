@@ -3,3 +3,4 @@ build
 bin
 lib
 output_logs/*
+vocabulary/*
