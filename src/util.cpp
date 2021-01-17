@@ -16,6 +16,8 @@
 
 #include "depthai/depthai.hpp"
 
+#include <kimera-vio/common/vio_types.h>
+
 /* -------------------------------------------------------------------------
  * FUNCTIONS
  * ------------------------------------------------------------------------- */
@@ -32,4 +34,8 @@ cv::Mat imgframe_to_mat(
     );
 }
 
-
+VIO::Timestamp depthai_ts_to_kimera_ts(dai::Timestamp ts_in) {
+    return (VIO::Timestamp)(
+        ((int64_t)ts_in.sec * 1000000000) + (int64_t)ts_in.nsec
+    );
+}

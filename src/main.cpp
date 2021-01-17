@@ -18,7 +18,13 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/ximgproc/disparity_filter.hpp>
 
-// #include <kimera-vio>
+#include <gflags/gflags.h>
+#include <glog/logging.h>
+
+#include <kimera-vio/pipeline/Pipeline.h>
+#include <kimera-vio/frontend/Frame.h>
+#include <kimera-vio/utils/Statistics.h>
+#include <kimera-vio/utils/Timer.h>
 
 #include "depthai/depthai.hpp"
 #include "util.h"
@@ -30,6 +36,12 @@
 // WLS parameters, taken from the OpenCV WLS filter docs recommended values.
 #define WLS_LAMBDA (8000)
 #define WLS_SIGMA (1.0)
+
+// This defines a variable called FLAGS_params_folder_path, for some reason.
+DEFINE_string(
+    params_folder_path,
+    "params/OAK-D",
+    "Path to the folder containing the yaml files with the VIO parameters.");
 
 /* -------------------------------------------------------------------------
  * STRUCTS
@@ -47,7 +59,27 @@ typedef struct _Pose {
 
 int main(int argc, char *argv[]) {
 
-    std::cout << "OAK-D/ORB_SLAM3 Experiment" << std::endl;
+    std::cout << "OAK-D/Kimera-VIO Experiment\n" << std::endl;
+
+    // Init Google log and flags, which are used by Kimera
+    google::ParseCommandLineFlags(&argc, &argv, true);
+    google::InitGoogleLogging(argv[0]);
+
+    // Parse VIO parameters from gflags.
+    VIO::VioParams vio_params(FLAGS_params_folder_path);
+
+    // A current issue (https://github.com/MIT-SPARK/Kimera-VIO/issues/48)
+    // shows that using already rectified images is a little broken, we have to
+    // patch the P and R_rectify values of each camera parameter to empty
+    // matrices, because for some reason they're not set if we pass
+    // images_rectified=true. 
+    vio_params.camera_params_[0].P_ = cv::Mat::eye(3, 3, CV_32F);
+    vio_params.camera_params_[0].R_rectify_ = cv::Mat::eye(3, 3, CV_32F);
+    vio_params.camera_params_[1].P_ = cv::Mat::eye(3, 3, CV_32F);
+    vio_params.camera_params_[1].R_rectify_ = cv::Mat::eye(3, 3, CV_32F);
+
+    // Create the VIO pipeline
+    VIO::Pipeline vio_pipeline(vio_params);
 
     // Create the pipeline that we're going to build. Pipelines are depthai's
     // way of chaining up different series or parallel process, sort of like
@@ -143,6 +175,7 @@ int main(int argc, char *argv[]) {
     // The time of each frame is required for SLAM, so we take an epoch time
     // (i.e. our start time) now
     auto slam_epoch = std::chrono::steady_clock::now();
+    uint64_t frame_id = 0;
 
     // Now for the main loop
     while (1) {
@@ -157,12 +190,50 @@ int main(int argc, char *argv[]) {
         auto rectif_right = imgframe_to_mat(rectif_right_frame);
         auto disp_map = imgframe_to_mat(disp_map_frame);
 
-        // Get the time between the epoch and now, allowing us to get a
-        // timestamp (in seconds) to pass into the slam system.
-        auto elapsed_time = std::chrono::steady_clock::now() - slam_epoch;
-        double frame_timestamp_s = elapsed_time.count() / 1000000000.0;
+        // Create VIO frames, which are a bit more complicated than just an
+        // image. The parameters here are:
+        //  - a frame_id, which we just count sequentially, as they are used as
+        //    indexes into GTSAM (so a timestamp _probably_ won't work)
+        //  - a timestamp, which should be simple, but no. DepthAI and Kimera
+        //    use different timestamp values, and Kimera doesn't say what their
+        //    underlying int64_t represents. So we're going to go with
+        //    DepthAI's number of nanoseconds + seconds as int64_t (~9bn
+        //    seconds, should be fine). The timestamps of the left and right
+        //    camera must match, so we just use the left camera timetsamps.
+        //  - the camera parameters, which are stored in a vector in
+        //    vio_params, and I'm assuming that left is 0 and right is 1.
+        //  - finally, the actual image...
+        //
+        // Parse the frames into the pipeline. This is done using callbacks, so
+        // we could create a fully callback based data source built on top of
+        // the OAK-D, but for now we'll do it simply with standalone calls
+        vio_pipeline.fillLeftFrameQueue(VIO::make_unique<VIO::Frame>(
+            (VIO::FrameId)frame_id,
+            depthai_ts_to_kimera_ts(rectif_left_frame->getTimestamp()),
+            vio_params.camera_params_[0],
+            rectif_left
+        ));
+        vio_pipeline.fillRightFrameQueue(VIO::make_unique<VIO::Frame>(
+            (VIO::FrameId)frame_id,
+            depthai_ts_to_kimera_ts(rectif_left_frame->getTimestamp()),
+            vio_params.camera_params_[1],
+            rectif_right
+        ));
 
-        std::cout << std::setprecision(4) << frame_timestamp_s << ": ";
+        
+        vio_pipeline.fillSingleImuQueue(VIO::ImuMeasurement(
+            depthai_ts_to_kimera_ts(rectif_left_frame->getTimestamp()),
+            VIO::ImuAccGyr::Zero()
+        ));
+
+        // Spin the VIO pipeline. This performs a single calculation cycle of
+        // the pipeline, effectively this is the "Run the SLAM" step.
+        if (!vio_pipeline.spin()) {
+            std::cout << "VIO Pipeline spin failed" << std::endl;
+            return EXIT_FAILURE;
+        }
+
+        // std::cout << std::setprecision(4) << frame_timestamp_s << ": ";
 
         // The output pose may be empty if the system was unable to track the
         // movement, so only get position and rotation if pose isn't empty. We
@@ -204,11 +275,20 @@ int main(int argc, char *argv[]) {
         cv::applyColorMap(filtered_disp_map, colour_disp, cv::COLORMAP_JET);
         cv::imshow("disparity", colour_disp);
 
+        // Spin the VIO vizualizer, which displays the graphs
+        // vio_pipeline.spinViz();
+
+        // Increment the frame ID
+        frame_id++;
+
         // See if q pressed, if so quit
         if (cv::waitKey(1) == 'q') {
             break;
         }
     }
+
+    // Shutdown the VIO pipeline
+    vio_pipeline.shutdown();
 
     return EXIT_SUCCESS;
 }
