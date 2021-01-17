@@ -5,6 +5,9 @@ This is an experiment in getting Kimera to work with an OAK-D.
 At the moment all SLAM processing is done on the host, while we wait for custom
 nodes to be added to OAK-D's Gen2 pipeline.
 
+> Note: Currently seems to not be able to find any samples, which mean's it's
+> not working quite yet.
+
 TODO: More info
 
 ## Build
@@ -35,7 +38,7 @@ TODO: More info
    ```
    sudo make -j $(nproc) install 
    ```
-3. Download the vocab file and unzip into `vocabulary` (link to file)[https://www.dropbox.com/s/lyo0qgbdxn6eg6o/ORBvoc.zip?dl=0]
+3. Download the vocab file and unzip into `vocabulary` [link to file](https://www.dropbox.com/s/lyo0qgbdxn6eg6o/ORBvoc.zip?dl=0)
 3. Build the project:
     ```
     mkdir build && cd build
