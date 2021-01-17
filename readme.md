@@ -35,6 +35,7 @@ TODO: More info
    ```
    sudo make -j $(nproc) install 
    ```
+3. Download the vocab file and unzip into `vocabulary` (link to file)[https://www.dropbox.com/s/lyo0qgbdxn6eg6o/ORBvoc.zip?dl=0]
 3. Build the project:
     ```
     mkdir build && cd build
